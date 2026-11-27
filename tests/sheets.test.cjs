@@ -8,6 +8,7 @@ const sheets = 'https://sheets.googleapis.com/v4/spreadsheets';
 const mime = 'application/vnd.google-apps.spreadsheet';
 const title = '[Shopping List POC] ';
 const listId = 'd152930a-b483-42d8-b6aa-5504e3461990';
+const categoryId = '848265ca-d52b-4829-9f42-854cbe783f55';
 const itemId = 'c06c4b63-57cb-451a-858c-b7cb426d2fe0';
 const now = '2026-11-27T00:00:00.000Z';
 const headers = {
@@ -41,9 +42,10 @@ function item(name = 'דמה', id = itemId) {
   return [id, name, 1, 'piece', 'other', false, '', now, now, false];
 }
 
-async function setup(t, data = []) {
+async function setup(t, data = [], { clock = false } = {}) {
   const page = await browser.newPage({ viewport: { width: 390, height: 820 } });
   t.after(() => page.close());
+  if (clock) await page.clock.install();
   const files = new Map(data.map(entry => [entry.file.id, entry]));
   const calls = [];
   const hooks = {};
@@ -119,7 +121,9 @@ async function setup(t, data = []) {
       return send({});
     }
     if (endpoint.pathname.endsWith(':append')) {
-      entry.values.Items.push(...body.values);
+      const mode = endpoint.searchParams.get('valueInputOption');
+      entry.values.Items.push(...body.values.map(row => row.map(value =>
+        mode === 'USER_ENTERED' && value === '=1+1' ? 2 : value)));
       return send({});
     }
     return send({ spreadsheetId: id,
@@ -215,7 +219,7 @@ test('Append and targeted quantity, completion and logical deletion persist with
   }
   await click('sheetLoad');
   await status('נקרא ואומת');
-  assert.deepEqual(entry.values.Items[1].slice(0, 7), [id, 'פריט דמה', 2.5, 'piece', 'other', true, '']);
+  assert.deepEqual(entry.values.Items[1].slice(0, 7), [id, 'פריט דמה', 2.5, 'piece', 'other', true, '=1+1']);
   assert.equal(entry.values.Items[1][9], true);
   await expect(page.locator('#sheetRows')).toContainText('נמחק לוגית');
 });
@@ -365,4 +369,196 @@ test('Spreadsheet text is rendered literally in the list and item selector', asy
   await expect(page.locator('#sheetItem option').last()).toContainText(payload);
   assert.equal(await page.locator('#sheetRows img').count(), 0);
   assert.equal(await page.evaluate(() => window.injected), undefined);
+});
+
+for (const outcome of [408, 429, 503, 'malformed JSON', 'invalid JSON shape']) {
+  test('Ambiguous append preserves its UUID across reconciliation after ' + outcome, async t => {
+    const { page, files, hooks, click, status, load, writes } = await setup(t, [fixture()]);
+    let delayedRow;
+    hooks.after = async ({ endpoint }, route) => {
+      if (!endpoint.pathname.endsWith(':append')) return;
+      delayedRow = files.get('file-1').values.Items.pop();
+      if (typeof outcome === 'number') await route.fulfill({ status: outcome, json: {} });
+      else if (outcome === 'invalid JSON shape') await route.fulfill({ json: [] });
+      else await route.fulfill({ contentType: 'application/json', body: '{' });
+      return true;
+    };
+    await load();
+    await click('sheetAppend');
+    await status('טרם אומתה');
+    await expect(page.locator('#sheetPending')).toContainText(delayedRow[0]);
+    await expect(page.locator('#sheetCreate')).toBeDisabled();
+    await click('sheetReconcile');
+    await status('טרם אומתה');
+    files.get('file-1').values.Items.push(delayedRow);
+    await click('sheetReconcile');
+    await status('הכתיבה אומתה');
+    await expect(page.locator('#sheetPending')).toBeEmpty();
+    assert.equal(writes().length, 1);
+  });
+}
+
+test('Definitive create rejection clears pending and sends no reconciliation writes', async t => {
+  const { page, files, hooks, click, status, writes } = await setup(t);
+  hooks.before = async ({ endpoint, method }, route, reply) => {
+    if (!endpoint.href.startsWith(drive) || method !== 'POST') return;
+    await reply({ error: { message: 'invalid request' } }, 400);
+    return true;
+  };
+  await click('sheetCreate');
+  await status('HTTP 400');
+  await expect(page.locator('#sheetPending')).toBeEmpty();
+  await expect(page.locator('#sheetReconcile')).toBeDisabled();
+  await expect(page.locator('#sheetCreate')).toBeEnabled();
+  assert.equal(files.size, 0);
+  assert.equal(writes().length, 1);
+});
+
+test('A 401 on the append itself expires the session and clears the rejected operation', async t => {
+  const { page, hooks, click, load, writes, connect } = await setup(t, [fixture()]);
+  await load();
+  hooks.before = async ({ endpoint }, route, reply) => {
+    if (!endpoint.pathname.endsWith(':append')) return;
+    await reply({}, 401);
+    return true;
+  };
+  await click('sheetAppend');
+  await expect(page.locator('#status')).toContainText('תוקף');
+  await connect('A', 'reconnect');
+  await expect(page.locator('#sheetPending')).toBeEmpty();
+  await expect(page.locator('#sheetReconcile')).toBeDisabled();
+  assert.equal(writes().length, 1);
+});
+
+test('Local expiry during append retains the dispatched operation for the renewed session', async t => {
+  const { page, hooks, click, status, load, writes, connect } = await setup(t, [fixture()], { clock: true });
+  await load();
+  let signalStarted;
+  let release;
+  const started = new Promise(resolve => { signalStarted = resolve; });
+  const delayed = new Promise(resolve => { release = resolve; });
+  hooks.after = async ({ endpoint }, route) => {
+    if (!endpoint.pathname.endsWith(':append')) return;
+    signalStarted();
+    await delayed;
+    await route.abort().catch(() => {});
+    return true;
+  };
+  await click('sheetAppend');
+  await started;
+  await page.clock.fastForward(3600001);
+  await expect(page.locator('#status')).toContainText('תוקף');
+  release();
+  await connect('A', 'reconnect');
+  await expect(page.locator('#sheetPending')).toContainText(writes()[0].body.values[0][0]);
+  await click('sheetReconcile');
+  await status('הכתיבה אומתה');
+  assert.equal(writes().length, 1);
+});
+
+test('Rejection after Drive create keeps the partial file and original identity blocked', async t => {
+  const { page, files, hooks, click, status, writes, connect, discover } = await setup(t);
+  hooks.before = async ({ endpoint }, route, reply) => {
+    if (!endpoint.pathname.endsWith('/values:batchUpdate')) return;
+    await reply({}, 403);
+    return true;
+  };
+  await click('sheetCreate');
+  await status('טרם אומתה');
+  const entry = files.get('created-0');
+  const id = entry.file.appProperties.list_id;
+  await expect(page.locator('#sheetPending')).toContainText(id);
+  await click('sheetReconcile');
+  await status('עצרו כתיבה');
+  await discover();
+  await page.locator('#sheetSelect').selectOption('created-0');
+  await expect(page.locator('#sheetInit')).toHaveText('initializing');
+  await expect(page.locator('#sheetLoad')).toBeDisabled();
+  await page.locator('#client').fill('0-other.apps.googleusercontent.com');
+  await page.locator('#config button').click();
+  await connect();
+  await expect(page.locator('#sheetPending')).toBeEmpty();
+  await page.locator('#client').fill('0-synthetic.apps.googleusercontent.com');
+  await page.locator('#config button').click();
+  await connect();
+  await expect(page.locator('#sheetPending')).toContainText(id);
+  await expect(page.locator('#sheetCreate')).toBeDisabled();
+  const initialized = fixture('created-0');
+  initialized.values.Metadata[3][1] = id;
+  initialized.values.Metadata[5][1] = writes()[2].body.data[2].values[5][1];
+  initialized.values.Categories[1][1] = 'שם שונה';
+  entry.values = initialized.values;
+  await click('sheetReconcile');
+  await status('עצרו כתיבה');
+  assert.deepEqual(writes().map(call => call.method), ['POST', 'POST', 'POST']);
+});
+
+test('Invalid units, category references and schema invariants block append after load', async t => {
+  const entry = fixture();
+  const { click, status, load, writes } = await setup(t, [entry]);
+  const invalid = [
+    () => { entry.values.Items[1][3] = 'arbitrary-unit'; },
+    () => { entry.values.Items[1][4] = categoryId; },
+    () => { entry.values.Categories[1][3] = false; },
+    () => { entry.values.Categories[1][2] = false; },
+    () => { entry.values.Categories.push(['unknown_builtin', 'דמה', true, true]); },
+    () => { entry.values.Categories.push([categoryId, 'דמה', true, true]); },
+    () => { entry.values.Categories.push([categoryId, 'דמה', false, true],
+      [categoryId.toUpperCase(), 'כפילות', false, false]); },
+    () => { entry.values.Items[1][2] = '1'; },
+    () => { entry.values.Metadata[5][1] = '2026-02-30T10:00:00Z'; },
+  ];
+  for (const corrupt of invalid) {
+    entry.values = fixture().values;
+    entry.values.Items.push(item());
+    await load();
+    corrupt();
+    await click('sheetAppend');
+    await status('אינם תואמים');
+  }
+  assert.equal(writes().length, 0);
+});
+
+test('Inactive custom category falls back to other with a repair cue and preserves its cell', async t => {
+  const entry = fixture();
+  entry.values.Categories.push([categoryId, 'מחלקה לא פעילה', false, false]);
+  const row = item();
+  row[4] = categoryId;
+  entry.values.Items.push(row);
+  const { page, click, status, load } = await setup(t, [entry]);
+  await load();
+  await expect(page.locator('#sheetRows')).toContainText('אחר (שיוך מחלקה דורש תיקון)');
+  await page.locator('#sheetItem').selectOption(itemId);
+  await click('sheetComplete');
+  await status('הכתיבה אומתה');
+  assert.equal(row[4], categoryId);
+});
+
+test('Synthetic formula-like note is sent RAW and verified by UNFORMATTED_VALUE', async t => {
+  const { page, calls, files, hooks, click, status, load, writes } = await setup(t, [fixture()]);
+  await load();
+  hooks.before = ({ endpoint }) => {
+    if (endpoint.pathname.endsWith('/values:batchGet') && writes().length) {
+      files.get('file-1').values.Items[1][6] = 2;
+    }
+  };
+  await click('sheetAppend');
+  await status('אינם תואמים');
+  const [append] = writes();
+  const row = append.body.values[0];
+  assert.equal(append.endpoint.searchParams.get('valueInputOption'), 'RAW');
+  assert.equal(row[6], '=1+1');
+  assert.equal(calls.at(-1).endpoint.searchParams.get('valueRenderOption'), 'UNFORMATTED_VALUE');
+  await expect(page.locator('#sheetPending')).toContainText(row[0]);
+  hooks.before = undefined;
+  files.get('file-1').values.Items[1][6] = '=2+2';
+  await click('sheetReconcile');
+  await status('טרם אומתה');
+  await expect(page.locator('#sheetPending')).toContainText(row[0]);
+  files.get('file-1').values.Items[1][6] = row[6];
+  await click('sheetReconcile');
+  await status('הכתיבה אומתה');
+  await expect(page.locator('#sheetRows')).toContainText('=1+1');
+  await expect(page.locator('#sheetPending')).toBeEmpty();
+  assert.equal(writes().length, 1);
 });

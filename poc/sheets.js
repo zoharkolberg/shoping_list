@@ -11,18 +11,25 @@ const schemas = {
   Metadata: ["key", "value"],
 };
 const tabs = Object.keys(schemas);
+const syntheticUnit = "piece";
+const otherCategory = ["other", "אחר", true, true];
+const definitiveRejections = new Set([400, 401, 403, 404]);
 const uuid = value => typeof value === "string" &&
   /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
 const identity = value => value.toLowerCase();
-const timestamp = value => typeof value === "string" &&
-  /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(value) && Number.isFinite(Date.parse(value));
+function timestamp(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(value)) return false;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 19) === value.slice(0, 19);
+}
 const text = value => typeof value === "string" && Boolean(value.trim());
 
 export class SheetsError extends Error {
-  constructor(code, status) {
+  constructor(code, status, writeOutcome) {
     super(code);
     this.code = code;
     this.status = status;
+    this.writeOutcome = writeOutcome;
   }
 }
 
@@ -31,13 +38,17 @@ function requireValid(condition, code = "schema") {
 }
 
 export function googleRequest(session, isCurrent) {
-  function checkSession() {
-    if (!isCurrent() || session.controller.signal.aborted) throw new SheetsError("stale");
-    if (Date.now() >= session.expiresAt) throw new SheetsError("expired");
+  function checkSession(writeOutcome) {
+    if (!isCurrent() || session.controller.signal.aborted) {
+      throw new SheetsError("stale", undefined, writeOutcome);
+    }
+    if (Date.now() >= session.expiresAt) throw new SheetsError("expired", undefined, writeOutcome);
   }
 
   return async (url, method = "GET", body) => {
-    checkSession();
+    const write = method !== "GET";
+    const uncertain = write ? "uncertain" : undefined;
+    checkSession(write ? "notSent" : undefined);
     const controller = new AbortController();
     const cancel = () => controller.abort();
     const timer = setTimeout(cancel, 15000);
@@ -49,18 +60,25 @@ export function googleRequest(session, isCurrent) {
         method, headers, body: body && JSON.stringify(body), signal: controller.signal,
         cache: "no-store", credentials: "omit", redirect: "error",
       });
-      checkSession();
-      if (response.status === 401) throw new SheetsError("expired");
+      if (definitiveRejections.has(response.status)) {
+        throw new SheetsError(response.status === 401 ? "expired" : "api", response.status,
+          write ? "rejected" : undefined);
+      }
+      checkSession(uncertain);
       if (!response.ok) {
-        throw new SheetsError(response.status >= 500 || response.status === 408 ? "network" : "api",
-          response.status);
+        const transient = response.status === 408 || response.status === 429 || response.status >= 500;
+        throw new SheetsError(transient ? "network" : "api", response.status, uncertain);
       }
       const data = await response.json();
-      checkSession();
+      checkSession(uncertain);
+      if (data === null || typeof data !== "object" || Array.isArray(data) || "error" in data) {
+        throw new SheetsError("response", response.status, uncertain);
+      }
       return data;
     } catch (error) {
-      checkSession();
-      throw error instanceof SheetsError ? error : new SheetsError("network");
+      if (error instanceof SheetsError) throw error;
+      checkSession(uncertain);
+      throw new SheetsError(error instanceof SyntaxError ? "response" : "network", undefined, uncertain);
     } finally {
       clearTimeout(timer);
       session.controller.signal.removeEventListener("abort", cancel);
@@ -85,7 +103,8 @@ function fileInfo(file, state) {
 }
 
 function rowsFor(tab, values) {
-  const [header, ...rows] = values ?? [];
+  requireValid(Array.isArray(values) && values.every(Array.isArray));
+  const [header, ...rows] = values;
   const expected = schemas[tab];
   requireValid(header?.length === expected.length && expected.every((value, index) => header[index] === value));
   return rows;
@@ -148,7 +167,9 @@ export function shoppingSheets(request, pending = {}) {
       fields: "spreadsheetId,sheets(properties(sheetId,title,sheetType))",
     }));
     requireValid(data.spreadsheetId === id && Array.isArray(data.sheets));
-    return data.sheets.map(sheet => sheet.properties);
+    const layouts = data.sheets.map(sheet => sheet?.properties);
+    requireValid(layouts.every(layout => Number.isInteger(layout?.sheetId) && text(layout.title)));
+    return layouts;
   }
 
   async function read(file) {
@@ -159,23 +180,32 @@ export function shoppingSheets(request, pending = {}) {
     const params = new URLSearchParams({ valueRenderOption: "UNFORMATTED_VALUE" });
     for (const tab of tabs) params.append("ranges", "'" + tab + "'");
     const { valueRanges } = await request(spreadsheet(id) + "/values:batchGet?" + params);
-    requireValid(valueRanges?.length === tabs.length);
+    requireValid(Array.isArray(valueRanges) && valueRanges.length === tabs.length);
     const [items, categories, metadata] = tabs.map((tab, index) => rowsFor(tab, valueRanges[index]?.values));
+    requireValid(metadata.length === 5 && metadata.every(row => row.length === 2));
     const meta = new Map(metadata);
-    requireValid(metadata.length === 5 && meta.size === 5 && metadata.every(row => row.length === 2) &&
+    requireValid(meta.size === 5 &&
       meta.get("app_type") === properties.app_type && meta.get("schema_version") === properties.schema_version &&
       meta.get("list_id") === file.appProperties.list_id && meta.get("list_type") === "shopping" &&
       timestamp(meta.get("created_at")));
-    const categoryRows = uniqueRows(categories, id => id === "other" || uuid(id) ||
-      /^[a-z][a-z0-9_-]*$/.test(id), "schema");
-    requireValid(categoryRows.every(({ row }) => row.length === 4 && text(row[1]) &&
-      typeof row[2] === "boolean" && typeof row[3] === "boolean") &&
-      categoryRows.some(({ row }) => row[0] === "other" && row[3] === true));
+    const categoryRows = uniqueRows(categories, id => id === otherCategory[0] || uuid(id), "schema");
+    requireValid(categoryRows.every(({ id, row }) => row.length === 4 && text(row[1]) &&
+      row[2] === (id === otherCategory[0]) && typeof row[3] === "boolean"));
+    const byCategory = new Map(categoryRows.map(category => [category.id, category]));
+    requireValid(byCategory.get(otherCategory[0])?.row[3] === true);
     const itemRows = uniqueRows(items, uuid, "duplicateItem");
-    requireValid(itemRows.every(({ row }) => row.length === 10 && text(row[1]) &&
-      Number.isFinite(row[2]) && row[2] > 0 && text(row[3]) && text(row[4]) &&
-      typeof row[5] === "boolean" && typeof row[6] === "string" &&
-      timestamp(row[7]) && timestamp(row[8]) && typeof row[9] === "boolean"));
+    for (const item of itemRows) {
+      const { row } = item;
+      requireValid(row.length === 10 && text(row[1]) && Number.isFinite(row[2]) && row[2] > 0 &&
+        row[3] === syntheticUnit && typeof row[4] === "string" &&
+        (row[4] === otherCategory[0] || uuid(row[4])) &&
+        typeof row[5] === "boolean" && typeof row[6] === "string" &&
+        timestamp(row[7]) && timestamp(row[8]) && typeof row[9] === "boolean");
+      const category = byCategory.get(identity(row[4]));
+      requireValid(category);
+      item.needsCategoryRepair = !category.row[3];
+      item.displayCategory = (category.row[3] ? category : byCategory.get(otherCategory[0])).row[1];
+    }
     return { file, items: itemRows, categories: categoryRows, metadata: meta };
   }
 
@@ -183,30 +213,33 @@ export function shoppingSheets(request, pending = {}) {
     return request(spreadsheet(id) + "/values:batchUpdate", "POST", { valueInputOption: "RAW", data });
   }
 
-  async function initialize(file) {
+  function checkInitialSnapshot(snapshot, createdAt) {
+    requireValid(snapshot.items.length === 0 && snapshot.categories.length === 1 &&
+      otherCategory.every((value, index) => snapshot.categories[0].row[index] === value) &&
+      (!createdAt || snapshot.metadata.get("created_at") === createdAt), "initializing");
+  }
+
+  async function initialize(file, operation) {
     const id = file.id;
     const layouts = await structure(id);
-    requireValid(layouts.length === 1 && layouts[0].sheetType === "GRID" &&
-      Number.isInteger(layouts[0].sheetId));
+    requireValid(layouts.length === 1 && layouts[0].sheetType === "GRID");
     await request(spreadsheet(id) + ":batchUpdate", "POST", { requests: [
       { updateSheetProperties: {
         properties: { sheetId: layouts[0].sheetId, title: "Items" }, fields: "title",
       } },
       ...tabs.slice(1).map(title => ({ addSheet: { properties: { title } } })),
     ] });
+    operation.createdAt = new Date().toISOString();
     const metadata = [
       ...Object.entries(properties), ["list_id", file.appProperties.list_id],
-      ["list_type", "shopping"], ["created_at", new Date().toISOString()],
+      ["list_type", "shopping"], ["created_at", operation.createdAt],
     ];
     await writeValues(id, [
       { range: "Items!A1:J1", values: [schemas.Items] },
-      { range: "Categories!A1:D2", values: [schemas.Categories, ["other", "אחר", true, true]] },
+      { range: "Categories!A1:D2", values: [schemas.Categories, otherCategory] },
       { range: "Metadata!A1:B6", values: [schemas.Metadata, ...metadata] },
     ]);
-    const snapshot = await read(file);
-    requireValid(snapshot.items.length === 0 && snapshot.categories.length === 1 &&
-      snapshot.categories[0].row[2] === true &&
-      metadata.every(([key, value]) => snapshot.metadata.get(key) === value));
+    checkInitialSnapshot(await read(file), operation.createdAt);
     await markReady(file);
   }
 
@@ -251,61 +284,72 @@ export function shoppingSheets(request, pending = {}) {
     return read(file);
   }
 
-  async function reconcile() {
-    if (!pending.operation) return;
-    const operation = pending.operation;
+  async function verify(operation) {
     if (operation.type === "create") {
       const matches = matchingFiles(await listFiles(), operation.listId);
       requireValid(matches.length < 2, "duplicateList");
       requireValid(matches.length === 1, "uncertain");
-      const file = fileInfo(matches[0]);
+      const id = matches[0].id;
+      requireValid(!operation.id || operation.id === id, "uncertain");
+      const file = fileInfo(await request(query(driveFile(id), { fields })));
+      requireValid(file.id === id && file.appProperties.list_id === operation.listId, "uncertain");
+      operation.id = id;
+      const initializing = file.appProperties.initialization_status === "initializing";
       const snapshot = await read(file).catch(error => {
-        if (file.appProperties.initialization_status === "initializing" && error.code === "schema") {
+        if (initializing && ["schema", "duplicateItem"].includes(error.code)) {
           throw new SheetsError("initializing");
         }
         throw error;
       });
-      if (file.appProperties.initialization_status === "initializing") {
-        requireValid(file.capabilities?.canEdit === true && snapshot.items.length === 0 &&
-          snapshot.categories.length === 1 && snapshot.categories[0].row[2] === true, "initializing");
+      checkInitialSnapshot(snapshot, operation.createdAt);
+      if (initializing) {
+        requireValid(file.capabilities?.canEdit === true, "readOnly");
         snapshot.file = await markReady(file);
       }
-      delete pending.operation;
       return { snapshot };
     }
     const snapshot = await load(operation.id);
     const item = snapshot.items.find(item => item.id === identity(operation.itemId));
     requireValid(item && operation.expected.every(([column, value]) => item.row[column] === value), "uncertain");
-    delete pending.operation;
     return { snapshot };
+  }
+
+  async function verifyAndClear(operation) {
+    const result = await verify(operation);
+    delete pending.operation;
+    return result;
+  }
+
+  async function reconcile() {
+    const operation = pending.operation;
+    requireValid(operation && !operation.active, "pending");
+    operation.active = true;
+    try {
+      return await verifyAndClear(operation);
+    } finally {
+      operation.active = false;
+    }
   }
 
   async function mutate(operation, write) {
     requireValid(!pending.operation, "pending");
     pending.operation = operation;
+    operation.active = true;
     try {
-      await write();
-    } catch (error) {
-      if (error.code === "api" && !operation.fileCreated) {
-        delete pending.operation;
-        throw error;
-      }
-      if (["expired", "stale"].includes(error.code)) throw error;
       try {
-        const resolved = await reconcile();
-        if (resolved) return resolved;
-      } catch (verificationError) {
-        if (["expired", "stale", "duplicateList", "duplicateItem"].includes(verificationError.code)) {
-          throw verificationError;
+        await write();
+      } catch (error) {
+        // A later failure cannot undo a confirmed Drive create.
+        if (!operation.createAccepted && ["notSent", "rejected"].includes(error.writeOutcome)) {
+          delete pending.operation;
+          throw error;
         }
+        if (["expired", "stale"].includes(error.code)) throw error;
+        throw new SheetsError("uncertain", error.status);
       }
-      throw new SheetsError("uncertain");
-    }
-    try {
-      return await reconcile();
-    } catch (error) {
-      if (["expired", "stale", "duplicateList", "duplicateItem"].includes(error.code)) throw error;
-      throw new SheetsError("uncertain");
+      return await verifyAndClear(operation);
+    } finally {
+      operation.active = false;
     }
   }
 
@@ -317,12 +361,13 @@ export function shoppingSheets(request, pending = {}) {
       const file = await request(query(drive, { fields }), "POST", {
         name: prefix + listId, mimeType: mime, appProperties,
       });
-      operation.fileCreated = true;
+      operation.createAccepted = true;
       fileInfo(file, "initializing");
       requireValid(file.appProperties.list_id === listId && file.capabilities?.canEdit === true);
+      operation.id = file.id;
       const matches = matchingFiles(await listFiles(), listId);
       requireValid(matches.every(match => match.id === file.id), "duplicateList");
-      await initialize(file);
+      await initialize(file, operation);
     });
   }
 
@@ -332,7 +377,7 @@ export function shoppingSheets(request, pending = {}) {
     const itemId = crypto.randomUUID();
     requireValid(!items.some(item => item.id === itemId), "duplicateItem");
     const now = new Date().toISOString();
-    const row = [itemId, "פריט דמה", 1, "piece", "other", false, "", now, now, false];
+    const row = [itemId, "פריט דמה", 1, syntheticUnit, otherCategory[0], false, "=1+1", now, now, false];
     return mutate({ type: "append", id, itemId, expected: row.map((value, column) => [column, value]) },
       () => request(query(spreadsheet(id) + "/values/Items!A:J:append", {
         valueInputOption: "RAW", insertDataOption: "OVERWRITE",

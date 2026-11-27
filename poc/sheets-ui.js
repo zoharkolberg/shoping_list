@@ -3,9 +3,10 @@ import { googleRequest, shoppingSheets } from "./sheets.js";
 const messages = {
   api: "הבקשה ל־Google נדחתה.",
   network: "קריאת Google נכשלה או חרגה מזמן ההמתנה.",
+  response: "התקבלה תשובה לא תקינה מ־Google.",
   schema: "מבנה הגיליון או הערכים אינם תואמים לסכמה.",
   unrelated: "הקובץ לא זוהה כקובץ דמה בבעלות החשבון.",
-  initializing: "הקובץ עדיין במצב initializing.",
+  initializing: "הקובץ עדיין במצב initializing. אם האתחול חלקי, עצרו כתיבה ותעדו את המזהים לפי מדריך הבדיקה.",
   duplicateList: "נמצאו קבצים עם אותו list_id. הכתיבה חסומה.",
   duplicateItem: "נמצאו שורות עם אותו item_id. הכתיבה חסומה.",
   readOnly: "לחשבון אין יכולת עריכה בקובץ.",
@@ -39,11 +40,11 @@ export function attachSheetsUI(ui, currentSession, expire) {
     ui.sheetItem.replaceChildren();
     ui.sheetRows.replaceChildren();
     option(ui.sheetItem, "", "בחירת פריט");
-    for (const { id, row } of current?.snapshot?.items ?? []) {
+    for (const { id, row, displayCategory, needsCategoryRepair } of current?.snapshot?.items ?? []) {
       if (!row[9]) option(ui.sheetItem, id, row[1] + " · " + id);
       const line = document.createElement("li");
       line.textContent = [row[1], row[0], "כמות " + row[2], row[9] ? "נמחק לוגית"
-        : row[5] ? "נרכש" : "פתוח", row[6]].join(" · ");
+        : row[5] ? "נרכש" : "פתוח", displayCategory + (needsCategoryRepair ? " (שיוך מחלקה דורש תיקון)" : ""), row[6]].join(" · ");
       ui.sheetRows.append(line);
     }
   }
@@ -66,7 +67,10 @@ export function attachSheetsUI(ui, currentSession, expire) {
     }
     ui.sheetQuantity.disabled = ui.sheetQuantitySave.disabled;
     ui.sheetReconcile.disabled = !enabled || !pending;
-    ui.sheetPending.textContent = pending ? "מזהה לבדיקה חוזרת " + (pending.listId ?? pending.itemId) : "";
+    ui.sheetPending.textContent = pending
+      ? "מזהה לבדיקה חוזרת " + (pending.listId ?? pending.itemId) +
+        (pending.id ? " · מזהה גיליון " + pending.id : "") + " · פעולות כתיבה מושהות."
+      : "";
     ui.sheetListId.textContent = file?.appProperties?.list_id ?? "—";
     ui.sheetId.textContent = file?.id ?? "—";
     ui.sheetInit.textContent = file?.appProperties?.initialization_status ?? "—";
@@ -192,7 +196,8 @@ export function attachSheetsUI(ui, currentSession, expire) {
       option(ui.sheetSelect, "", "בחירת גיליון");
       ui.sheetQuantity.value = "";
       showItems(state);
-      ui.sheetStatus.textContent = session ? "אפשר ליצור גיליון או לגלות קובצי דמה." : "נדרש חיבור ל־Google.";
+      ui.sheetStatus.textContent = !session ? "נדרש חיבור ל־Google."
+        : state.pending.operation ? messages.uncertain : "אפשר ליצור גיליון או לגלות קובצי דמה.";
     }
     render();
   };
