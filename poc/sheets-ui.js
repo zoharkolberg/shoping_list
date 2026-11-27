@@ -23,6 +23,7 @@ const messages = {
   sharingDenied: "ההרשאה השתנתה או שניהולה אינו זמין לחשבון הבעלים.",
   sharingInput: "הזינו כתובת יחידה של חשבון בדיקה אחר ובחרו צופה או עורך.",
   sharingExists: "כבר קיימת הרשאת משתמש. בדקו את ההרשאות לפני שינוי התפקיד.",
+  sharingRestriction: "לא אומתה הגבלת השיתוף לבעלים ב־Drive. מתן גישת עורך חסום.",
   sharingUncertain: "תוצאת שינוי ההרשאה אינה ידועה. בדקו הרשאות לפני פעולה נוספת.",
   pending: "קיימת פעולה שתוצאתה טרם אומתה.",
   uncertain: "תוצאת הכתיבה טרם אומתה. אפשר לבדוק שוב לפי המזהה.",
@@ -90,8 +91,10 @@ export function attachSheetsUI(ui, currentSession, expire) {
     const file = chosen?.file;
     const loaded = Boolean(state?.snapshot && state.snapshot.file.id === file?.id);
     const pending = state?.pending.operation;
-    const writable = enabled && loaded && !pending && state.snapshot.file.capabilities?.canEdit === true;
-    ui.sheetCreate.disabled = !enabled || Boolean(pending);
+    const sharingPending = state?.pending.sharing;
+    const writesBlocked = Boolean(pending || sharingPending);
+    const writable = enabled && loaded && !writesBlocked && state.snapshot.file.capabilities?.canEdit === true;
+    ui.sheetCreate.disabled = !enabled || writesBlocked;
     ui.sheetDiscover.disabled = !enabled;
     ui.sheetSelect.disabled = !enabled || !state.files.length;
     ui.sheetLoad.disabled = !enabled || !file || Boolean(chosen.issue);
@@ -102,7 +105,15 @@ export function attachSheetsUI(ui, currentSession, expire) {
     const manageable = enabled && loaded && state.snapshot.file.ownedByMe === true &&
       state.snapshot.file.capabilities.canShare === true;
     ui.inspectPermissions.disabled = !manageable;
-    const inspected = manageable && Boolean(state.permissions);
+    const restricted = loaded && state.snapshot.file.writersCanShare === false;
+    ui.sharingRestriction.textContent = !loaded || !state.snapshot.file.ownedByMe ? ""
+      : restricted ? "הגבלת השיתוף לבעלים אומתה ב־Drive." : messages.sharingRestriction;
+    ui.restrictSharing.disabled = !manageable || writesBlocked || restricted;
+    ui.reconcileSharing.disabled = !enabled || !sharingPending;
+    ui.sharingPending.textContent = sharingPending
+      ? "מזהה גיליון לבדיקה חוזרת " + sharingPending.id + " · פעולות כתיבה מושהות."
+      : "";
+    const inspected = manageable && !writesBlocked && Boolean(state.permissions);
     ui.share.disabled = !inspected;
     ui.recipient.disabled = !inspected;
     ui.permissionRole.disabled = !inspected;
@@ -273,8 +284,11 @@ export function attachSheetsUI(ui, currentSession, expire) {
     const id = current.snapshot?.file.id;
     const listId = current.snapshot?.metadata.get("list_id");
     clearPermissions(current);
-    const entries = await current.sharing.inspect(id, listId);
-    if (state === current) showPermissions(current, entries);
+    const { entries, writersCanShare } = await current.sharing.inspect(id, listId);
+    if (state === current) {
+      current.snapshot.file.writersCanShare = writersCanShare;
+      showPermissions(current, entries);
+    }
     return "הרשאות השיתוף נקראו.";
   }
 
@@ -289,10 +303,22 @@ export function attachSheetsUI(ui, currentSession, expire) {
       clearPermissions(current);
       await current.sharing.change(id, listId, action, { email, role, permissionId, currentRole });
       if (state !== current) return;
-      return "Google אישרה את השינוי. בדקו שוב את ההרשאות.";
+      if (action === "restrict") current.snapshot.file.writersCanShare = false;
+      return "השינוי אומת בקריאה חוזרת מ־Google.";
     }, ui.sharingStatus);
   }
 
+  ui.restrictSharing.addEventListener("click", () => void changePermission("restrict"));
+  ui.reconcileSharing.addEventListener("click", () => void run(async current => {
+    const operation = current.pending.sharing;
+    clearPermissions(current);
+    await current.sharing.reconcile();
+    if (state !== current) return;
+    if (operation.action === "restrict" && current.snapshot?.file.id === operation.id) {
+      current.snapshot.file.writersCanShare = false;
+    }
+    return "שינוי השיתוף אומת בקריאה חוזרת.";
+  }, ui.sharingStatus));
   ui.inspectPermissions.addEventListener("click", () => void run(inspect, ui.sharingStatus));
   ui.permissionSelect.addEventListener("change", render);
   ui.sharingForm.addEventListener("submit", event => {
@@ -309,7 +335,7 @@ export function attachSheetsUI(ui, currentSession, expire) {
         const pending = pendingFor(session, clientId);
         const request = googleRequest(session, () => currentSession() === session);
         const service = shoppingSheets(request, pending, session.account);
-        state = { session, pending, service, sharing: shoppingSharing(request, service, session.account), files: [] };
+        state = { session, pending, service, sharing: shoppingSharing(request, service, session.account, pending), files: [] };
       }
       clearPermissions(state);
       ui.probeId.value = "";

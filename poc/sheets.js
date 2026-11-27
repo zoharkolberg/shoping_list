@@ -3,7 +3,7 @@ const sheets = "https://sheets.googleapis.com/v4/spreadsheets";
 const mime = "application/vnd.google-apps.spreadsheet";
 const prefix = "[Shopping List POC] ";
 const properties = { app_type: "shopping_list", schema_version: "1" };
-const fields = "id,name,mimeType,trashed,ownedByMe,shared,capabilities(canEdit,canShare),appProperties";
+const fields = "id,name,mimeType,trashed,ownedByMe,shared,writersCanShare,capabilities(canEdit,canShare),appProperties";
 const schemas = {
   Items: ["item_id", "name", "quantity", "unit_id", "category_id", "completed", "notes",
     "created_at", "updated_at", "deleted"],
@@ -269,6 +269,9 @@ export function shoppingSheets(request, pending, account) {
   }
 
   async function markReady(file) {
+    const current = fileInfo(await getFile(file.id), "initializing", true);
+    requireValid(current.appProperties.list_id === file.appProperties.list_id && current.capabilities.canEdit, "unrelated");
+    requireValid(current.writersCanShare === false, "sharingRestriction");
     const appProperties = { ...file.appProperties, initialization_status: "ready" };
     const updated = await request(query(driveFile(file.id), { fields }), "PATCH", { appProperties });
     requireValid(fileInfo(updated, "ready", true).id === file.id &&
@@ -387,6 +390,7 @@ export function shoppingSheets(request, pending, account) {
       requireValid(file.id === id && file.appProperties.list_id === operation.listId, "uncertain");
       operation.id = id;
       const initializing = file.appProperties.initialization_status === "initializing";
+      requireValid(file.writersCanShare === false, "sharingRestriction");
       const snapshot = await read(file).catch(error => {
         if (initializing && ["schema", "duplicateItem"].includes(error.code)) {
           throw new SheetsError("initializing");
@@ -415,7 +419,7 @@ export function shoppingSheets(request, pending, account) {
 
   async function reconcile() {
     const operation = pending.operation;
-    requireValid(operation && !operation.active, "pending");
+    requireValid(operation && !operation.active && !pending.sharing, "pending");
     operation.active = true;
     try {
       return await verifyAndClear(operation);
@@ -425,7 +429,7 @@ export function shoppingSheets(request, pending, account) {
   }
 
   async function mutate(operation, write) {
-    requireValid(!pending.operation, "pending");
+    requireValid(!pending.operation && !pending.sharing, "pending");
     pending.operation = operation;
     operation.active = true;
     try {
@@ -437,7 +441,7 @@ export function shoppingSheets(request, pending, account) {
           delete pending.operation;
           throw error;
         }
-        if (["expired", "stale"].includes(error.code)) throw error;
+        if (["expired", "stale", "sharingRestriction"].includes(error.code)) throw error;
         throw new SheetsError("uncertain", error.status);
       }
       return await verifyAndClear(operation);
@@ -453,7 +457,7 @@ export function shoppingSheets(request, pending, account) {
     await assertAccount(request, account);
     return mutate(operation, async () => {
       const file = await request(query(drive, { fields }), "POST", {
-        name: prefix + listId, mimeType: mime, appProperties,
+        name: prefix + listId, mimeType: mime, appProperties, writersCanShare: false,
       });
       operation.createAccepted = true;
       fileInfo(file, "initializing", true);
