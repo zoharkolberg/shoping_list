@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://accounts.google.com/gsi/client; style-src 'self' https://accounts.google.com/gsi/style; connect-src https://accounts.google.com/gsi/ https://openidconnect.googleapis.com https://www.googleapis.com; frame-src https://accounts.google.com/gsi/; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://accounts.google.com/gsi/client; style-src 'self' https://accounts.google.com/gsi/style; connect-src https://accounts.google.com/gsi/ https://openidconnect.googleapis.com https://www.googleapis.com https://sheets.googleapis.com; frame-src https://accounts.google.com/gsi/; base-uri 'none'; form-action 'none'">
   <title>בדיקת חיבור ל־Google</title>
   <link rel="stylesheet" href="./style.css">
   <script type="module" src="./app.js"></script>
@@ -30,7 +30,7 @@
         <dt>אימות הרשאות</dt><dd id="scopes">—</dd>
         <dt>תוקף האסימון</dt><dd id="expiration">—</dd>
       </dl>
-      <p>Google משמשת לאימות החשבון ולבדיקת קריאה מ־Drive. האימייל והאסימון נשמרים בזיכרון הדף. הדפדפן שומר את ה־Client ID בלבד. אפשר לנקות אותו בטופס ולנהל את ההרשאה בחשבון Google.</p>
+      <p>Google משמשת לאימות החשבון ולפעולות אבחון ב־Drive וב־Sheets. הדפדפן שומר את ה־Client ID בלבד. נתוני החיבור והאבחון נשמרים בזיכרון הדף. אפשר לנקות אותו בטופס ולנהל את ההרשאה בחשבון Google.</p>
       <div class="actions">
         <button id="connect" disabled>התחברות</button>
         <button id="reconnect" disabled>חיבור מחדש או החלפת חשבון</button>
@@ -42,6 +42,39 @@
       <h2 id="drive-heading">בדיקת קריאה מ־Google Drive</h2>
       <button id="drive" disabled>הפעלת בדיקת קריאה</button>
       <p id="driveStatus" role="status">טרם נבדק</p>
+    </section>
+
+    <section aria-labelledby="sheets-heading">
+      <h2 id="sheets-heading">בדיקת רשימת קניות ב־Google Sheets</h2>
+      <div class="actions">
+        <button id="sheetCreate" disabled>יצירת גיליון דמה</button>
+        <button id="sheetDiscover" disabled>גילוי גיליונות דמה</button>
+        <button id="sheetReconcile" disabled>בדיקת כתיבה שטרם אומתה</button>
+      </div>
+      <p id="sheetStatus" role="status">נדרש חיבור ל־Google.</p>
+      <p id="sheetPending" dir="auto"></p>
+      <label for="sheetSelect">גיליון</label>
+      <select id="sheetSelect" disabled><option value="">בחירת גיליון</option></select>
+      <div class="actions">
+        <button id="sheetLoad" disabled>טעינה או קריאה חוזרת</button>
+        <a id="sheetOpen" target="_blank" rel="noopener noreferrer" hidden>פתיחה ב־Google Sheets</a>
+      </div>
+      <dl>
+        <dt>list_id</dt><dd id="sheetListId" dir="auto">—</dd>
+        <dt>מזהה גיליון</dt><dd id="sheetId" dir="auto">—</dd>
+        <dt>מצב אתחול</dt><dd id="sheetInit" dir="auto">—</dd>
+      </dl>
+      <button id="sheetAppend" disabled>הוספת פריט דמה</button>
+      <ul id="sheetRows" aria-label="פריטים בגיליון"></ul>
+      <label for="sheetItem">פריט לעדכון</label>
+      <select id="sheetItem" disabled><option value="">בחירת פריט</option></select>
+      <label for="sheetQuantity">כמות חדשה</label>
+      <input id="sheetQuantity" type="number" step="any" inputmode="decimal" disabled>
+      <div class="actions">
+        <button id="sheetQuantitySave" disabled>שמירת כמות</button>
+        <button id="sheetComplete" disabled>סימון כנרכש</button>
+        <button id="sheetDelete" disabled>מחיקה לוגית</button>
+      </div>
     </section>
 
     <section aria-labelledby="log-heading">

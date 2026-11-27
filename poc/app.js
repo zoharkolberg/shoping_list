@@ -1,3 +1,5 @@
+import { attachSheetsUI } from "./sheets-ui.js";
+
 const scopes = [
   "https://www.googleapis.com/auth/drive.file",
   "https://www.googleapis.com/auth/userinfo.email",
@@ -41,6 +43,7 @@ let configurationNote = "";
 let session;
 let status = "disconnected";
 let expirationTimer;
+const renderSheets = attachSheetsUI(ui, () => status === "connected" ? session : undefined, expire);
 
 function log(event) {
   const item = document.createElement("li");
@@ -70,6 +73,7 @@ function render() {
   ui.disconnect.textContent = status === "connecting" ? "ביטול ניסיון החיבור" : "התנתקות מקומית";
   ui.disconnect.disabled = status === "disconnected";
   ui.drive.disabled = status !== "connected" || session.testing;
+  renderSheets(status === "connected" ? session : undefined, clientId);
 }
 
 function reset(nextStatus) {
