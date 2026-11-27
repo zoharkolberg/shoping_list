@@ -293,9 +293,9 @@ test('CSP permits documented GIS paths and confines application resource types',
     ([name, ...sources]) => [name, sources],
   ));
   assert.deepEqual(directives['default-src'], ["'none'"]);
-  assert.deepEqual(directives['script-src'], ["'self'", 'https://accounts.google.com/gsi/client']);
+  assert.deepEqual(directives['script-src'], ["'self'", 'https://accounts.google.com/gsi/client', 'https://apis.google.com']);
   assert.deepEqual(directives['style-src'], ["'self'", 'https://accounts.google.com/gsi/style']);
-  assert.deepEqual(directives['frame-src'], ['https://accounts.google.com/gsi/']);
+  assert.deepEqual(directives['frame-src'], ['https://accounts.google.com/gsi/', 'https://docs.google.com', 'https://drive.google.com']);
   assert.deepEqual(directives['connect-src'], [
     'https://accounts.google.com/gsi/', 'https://openidconnect.googleapis.com', 'https://www.googleapis.com',
     'https://sheets.googleapis.com',
