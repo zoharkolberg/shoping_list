@@ -1,6 +1,6 @@
-# הרצת בדיקות OAuth ו־CSP
+# הרצת בדיקות OAuth, CSP ו־Google Sheets
 
-הבדיקות משתמשות ב־Node.js, ב־Playwright וב־Chromium ככלי פיתוח. הדפדפן מריץ את עמוד ה־POC דרך HTTP מקומי תחת `/shoping_list/`. הבדיקות מדמות את GIS, את UserInfo ואת Drive עם מזהי דמה וכתובות תחת `example.test`. אין צורך בחשבון Google או ב־OAuth Client ID אמיתי.
+הבדיקות משתמשות ב־Node.js, ב־Playwright וב־Chromium ככלי פיתוח. הדפדפן מריץ את עמוד ה־POC דרך HTTP מקומי תחת `/shoping_list/`. הבדיקות מדמות את GIS, את UserInfo, Drive ו־Sheets עם מזהי דמה וכתובות תחת `example.test`. אין צורך בחשבון Google או ב־OAuth Client ID אמיתי.
 
 ## Codex
 
@@ -16,10 +16,13 @@ python3 -m http.server 8765 --bind 127.0.0.1 --directory "$TEST_WEB_ROOT"
 
 ```sh
 node --check poc/app.js
+node --check poc/sheets.js
+node --check poc/sheets-ui.js
 node --check tests/oauth.test.cjs
+node --check tests/sheets.test.cjs
 NODE_PATH="$(dirname "$(dirname "$(command -v node)")")/node_modules" \
   POC_CHROMIUM="$(command -v chromium)" \
-  node --test tests/oauth.test.cjs
+  node --test tests/*.test.cjs
 git diff --check
 ```
 
@@ -31,7 +34,7 @@ npm install --prefix "$TEST_TOOLS" --no-audit --no-fund playwright@1.62.1
 PLAYWRIGHT_BROWSERS_PATH="$TEST_TOOLS/browsers" \
   "$TEST_TOOLS/node_modules/.bin/playwright" install chromium
 NODE_PATH="$TEST_TOOLS/node_modules" PLAYWRIGHT_BROWSERS_PATH="$TEST_TOOLS/browsers" \
-  node --test tests/oauth.test.cjs
+  node --test tests/*.test.cjs
 ```
 
 ל־Chromium דרושות גם ספריות המערכת של הדפדפן. לאחר הבדיקות אפשר לעצור את השרת עם Ctrl+C.
@@ -40,4 +43,4 @@ NODE_PATH="$TEST_TOOLS/node_modules" PLAYWRIGHT_BROWSERS_PATH="$TEST_TOOLS/brows
 
 תוצאות הסוויטה הן תוצאות סימולציה. תרחישי הזמן משתמשים בשעון של Playwright. עבור שימוש חי עם חשבונות הבדיקה ועם Pages, ראו את [הוראות ההרצה הידנית](../poc/README.md). אימות TLS בדפדפן נשאר פעיל.
 
-הבדיקה הסטטית משווה את מדיניות ה־CSP להנחיות GIS עבור `script-src`, `style-src`, `frame-src` ו־`connect-src`. ל־`connect-src` נוספים שני מקורות ה־API הדרושים ל־UserInfo ול־Drive. `default-src 'none'` נשאר ברירת המחדל. [הנחיות Google ל־CSP](https://developers.google.com/identity/gsi/web/guides/get-google-api-clientid#content_security_policy)
+הבדיקה הסטטית משווה את מדיניות ה־CSP להנחיות GIS עבור `script-src`, `style-src`, `frame-src` ו־`connect-src`. ל־`connect-src` נוספים מקורות ה־API הדרושים ל־UserInfo, Drive ו־Sheets. `default-src 'none'` נשאר ברירת המחדל. [הנחיות Google ל־CSP](https://developers.google.com/identity/gsi/web/guides/get-google-api-clientid#content_security_policy)

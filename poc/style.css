@@ -26,7 +26,7 @@ h2 { margin-block-start: 0; font-size: 1.2rem; }
 dt { font-weight: 650; }
 dd { margin: 0 0 .5rem; text-align: start; }
 
-input, button {
+input, select, button {
   max-inline-size: 100%;
   min-block-size: 44px;
   padding: .5rem .75rem;
@@ -35,7 +35,7 @@ input, button {
   font: inherit;
 }
 
-input { display: block; inline-size: 100%; margin-block: .35rem .75rem; }
+input, select { display: block; inline-size: 100%; margin-block: .35rem .75rem; }
 button { color: #fff; background: #17536b; cursor: pointer; }
 button:disabled { color: #455962; background: #e5ebee; cursor: default; }
 :focus-visible { outline: 3px solid #136cb1; outline-offset: 2px; }
