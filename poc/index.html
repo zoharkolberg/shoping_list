@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://accounts.google.com/gsi/client; style-src 'self' https://accounts.google.com/gsi/style; connect-src https://accounts.google.com/gsi/ https://openidconnect.googleapis.com https://www.googleapis.com; frame-src https://accounts.google.com/gsi/; base-uri 'none'; form-action 'none'">
+  <title>בדיקת חיבור ל־Google</title>
+  <link rel="stylesheet" href="./style.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <main>
+    <h1>בדיקת חיבור ל־Google</h1>
+    <section aria-labelledby="config-heading">
+      <h2 id="config-heading">הגדרת OAuth</h2>
+      <form id="config" autocomplete="off">
+        <label for="client">OAuth Client ID</label>
+        <input id="client" dir="ltr" spellcheck="false" placeholder="YOUR_CLIENT_ID.apps.googleusercontent.com">
+        <button>שמירת הגדרה</button>
+      </form>
+      <p id="configuration" role="status"></p>
+      <button id="retryLibrary" hidden>טעינה מחדש של הדף</button>
+    </section>
+
+    <section aria-labelledby="connection-heading">
+      <h2 id="connection-heading">חיבור וחשבון</h2>
+      <p id="status" role="status">מנותק</p>
+      <dl>
+        <dt>חשבון</dt><dd id="email" dir="auto">—</dd>
+        <dt>אימות הרשאות</dt><dd id="scopes">—</dd>
+        <dt>תוקף האסימון</dt><dd id="expiration">—</dd>
+      </dl>
+      <p>Google משמשת לאימות החשבון ולבדיקת קריאה מ־Drive. האימייל והאסימון נשמרים בזיכרון הדף. הדפדפן שומר את ה־Client ID בלבד. אפשר לנקות אותו בטופס ולנהל את ההרשאה בחשבון Google.</p>
+      <div class="actions">
+        <button id="connect" disabled>התחברות</button>
+        <button id="reconnect" disabled>חיבור מחדש או החלפת חשבון</button>
+        <button id="disconnect" disabled>התנתקות מקומית</button>
+      </div>
+    </section>
+
+    <section aria-labelledby="drive-heading">
+      <h2 id="drive-heading">בדיקת קריאה מ־Google Drive</h2>
+      <button id="drive" disabled>הפעלת בדיקת קריאה</button>
+      <p id="driveStatus" role="status">טרם נבדק</p>
+    </section>
+
+    <section aria-labelledby="log-heading">
+      <h2 id="log-heading">יומן אבחון</h2>
+      <ol id="log"></ol>
+    </section>
+  </main>
+</body>
+</html>
