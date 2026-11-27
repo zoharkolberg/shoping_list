@@ -3,6 +3,8 @@ const scopes = [
   "https://www.googleapis.com/auth/userinfo.email",
   "openid",
 ];
+const gisTimeoutMs = 15000;
+const oauthTimeoutMs = 120000;
 const configKey = "shoping-list-poc.oauth-client-id";
 const validClient = value => /^[0-9]+-[a-z0-9_-]+\.apps\.googleusercontent\.com$/i.test(value);
 const ui = Object.fromEntries(Array.from(document.querySelectorAll("[id]"), element => [element.id, element]));
@@ -15,6 +17,7 @@ const messages = {
   denied: "ההרשאה נדחתה בחלון של Google.",
   popupClosed: "חלון ההרשאה נסגר לפני השלמת החיבור.",
   popupFailed: "פתיחת חלון ההרשאה נכשלה.",
+  oauthTimeout: "זמן ההמתנה להרשאה הסתיים. סגרו את חלון Google אם הוא פתוח ונסו להתחבר מחדש.",
   oauthFailed: "החיבור דרך Google נכשל.",
   missingScopes: "Google העניקה רק חלק מההרשאות הדרושות או שלא העניקה אותן כלל.",
   invalidToken: "Google החזירה תשובת אסימון לא תקינה.",
@@ -50,10 +53,12 @@ function render() {
   const configuration = configurationNote || (clientId ? "OAuth Client ID הוגדר." : "נדרש OAuth Client ID.");
   const libraryNote = {
     loading: " ספריית Google נטענת.",
-    failed: " טעינת ספריית Google נכשלה. אפשר לרענן את הדף ולנסות שוב.",
+    failed: " טעינת ספריית Google נכשלה.",
+    timedOut: " זמן ההמתנה לטעינת ספריית Google הסתיים.",
     ready: "",
   };
   ui.configuration.textContent = configuration + libraryNote[library];
+  ui.retryLibrary.hidden = library !== "failed" && library !== "timedOut";
   ui.status.textContent = messages[status];
   ui.email.textContent = session?.account?.email ?? "—";
   ui.scopes.textContent = session?.scopeStatus ?? "—";
@@ -62,12 +67,14 @@ function render() {
   const ready = Boolean(clientId) && library === "ready";
   ui.connect.disabled = !ready || status !== "disconnected";
   ui.reconnect.disabled = !ready || status === "connecting" || status === "disconnected";
+  ui.disconnect.textContent = status === "connecting" ? "ביטול ניסיון החיבור" : "התנתקות מקומית";
   ui.disconnect.disabled = status === "disconnected";
   ui.drive.disabled = status !== "connected" || session.testing;
 }
 
 function reset(nextStatus) {
   if (session) {
+    clearTimeout(session.oauthTimer);
     session.token = undefined;
     session.account = undefined;
     session.controller.abort();
@@ -87,6 +94,7 @@ function expire(attempt) {
 
 function fail(attempt, event) {
   if (session !== attempt) return;
+  clearTimeout(attempt.oauthTimer);
   attempt.controller.abort();
   attempt.token = undefined;
   clearTimeout(expirationTimer);
@@ -117,8 +125,16 @@ async function readGoogle(url, token, controller) {
   }
 }
 
+function awaitingOAuth(attempt) {
+  if (session !== attempt || status !== "connecting" || attempt.token) return false;
+  if (Date.now() < attempt.oauthDeadline) return true;
+  fail(attempt, "oauthTimeout");
+  return false;
+}
+
 async function acceptToken(attempt, response) {
-  if (session !== attempt || status !== "connecting" || attempt.token) return;
+  if (!awaitingOAuth(attempt)) return;
+  clearTimeout(attempt.oauthTimer);
   if (response.error) {
     fail(attempt, response.error === "access_denied" ? "denied" : "oauthFailed");
     return;
@@ -168,6 +184,8 @@ function connect() {
   reset("connecting");
   const attempt = { controller: new AbortController() };
   session = attempt;
+  attempt.oauthDeadline = Date.now() + oauthTimeoutMs;
+  attempt.oauthTimer = setTimeout(() => fail(attempt, "oauthTimeout"), oauthTimeoutMs);
   log("connecting");
   render();
   try {
@@ -177,7 +195,7 @@ function connect() {
       include_granted_scopes: false,
       callback: response => void acceptToken(attempt, response),
       error_callback: error => {
-        if (session !== attempt || status !== "connecting" || attempt.token) return;
+        if (!awaitingOAuth(attempt)) return;
         const popupErrors = {
           popup_closed: "popupClosed",
           popup_failed_to_open: "popupFailed",
@@ -271,19 +289,30 @@ ui.disconnect.addEventListener("click", () => {
 });
 ui.drive.addEventListener("click", testDrive);
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden && session?.token && Date.now() >= session.expiresAt) expire(session);
+  if (document.hidden || !session) return;
+  if (session.token && Date.now() >= session.expiresAt) expire(session);
+  else if (status === "connecting" && !session.token) awaitingOAuth(session);
 });
 
+ui.retryLibrary.addEventListener("click", () => window.location.reload());
+
 const gis = document.createElement("script");
+const gisDeadline = Date.now() + gisTimeoutMs;
+const gisTimer = setTimeout(() => finishLibraryLoad("timedOut"), gisTimeoutMs);
+
+function finishLibraryLoad(result) {
+  if (library !== "loading") return;
+  clearTimeout(gisTimer);
+  library = Date.now() >= gisDeadline ? "timedOut" : result;
+  if (library !== "ready") gis.remove();
+  render();
+}
+
 gis.src = "https://accounts.google.com/gsi/client";
 gis.async = true;
-gis.onload = () => {
-  library = window.google?.accounts?.oauth2?.initTokenClient ? "ready" : "failed";
-  render();
-};
-gis.onerror = () => {
-  library = "failed";
-  render();
-};
+gis.onload = () => finishLibraryLoad(
+  typeof window.google?.accounts?.oauth2?.initTokenClient === "function" ? "ready" : "failed",
+);
+gis.onerror = () => finishLibraryLoad("failed");
 document.head.append(gis);
 render();
