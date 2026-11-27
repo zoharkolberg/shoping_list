@@ -25,7 +25,7 @@ function fixture(id = 'file-1') {
   return {
     file: {
       id, name: title + id, mimeType: mime, ownedByMe: true, trashed: false,
-      capabilities: { canEdit: true },
+      capabilities: { canEdit: true, canShare: true },
       appProperties: { app_type: 'shopping_list', schema_version: '1', list_id: listId, initialization_status: 'ready' },
     },
     tabs: ['Items', 'Categories', 'Metadata'],
@@ -58,7 +58,7 @@ async function setup(t, data = [], { clock = false } = {}) {
   }));
   await page.route('https://openidconnect.googleapis.com/v1/userinfo', route => {
     const account = route.request().headers().authorization.split(' ')[1];
-    return route.fulfill({ json: { sub: account, email: account + '@example.test' } });
+    return route.fulfill({ json: hooks.identity?.(account) ?? { sub: account, email: account + '@example.test' } });
   });
 
   async function handle(route) {
@@ -561,4 +561,303 @@ test('Synthetic formula-like note is sent RAW and verified by UNFORMATTED_VALUE'
   await expect(page.locator('#sheetRows')).toContainText('=1+1');
   await expect(page.locator('#sheetPending')).toBeEmpty();
   assert.equal(writes().length, 1);
+});
+
+function pickerScript() {
+  window.gapi = { load(name, options) {
+    if (name !== 'picker') throw Error('unexpected library');
+    options.callback();
+  } };
+  window.google.picker = {
+    ViewId: { SPREADSHEETS: 'sheets' },
+    DocsViewMode: { LIST: 'list' },
+    Action: { CANCEL: 'cancel', PICKED: 'picked', LOADED: 'loaded' },
+    DocsView: class {
+      constructor(view) { window.pickerOptions = { view }; }
+      setMimeTypes(value) { window.pickerOptions.mime = value; return this; }
+      setMode(value) { window.pickerOptions.mode = value; return this; }
+    },
+    PickerBuilder: class {
+      addView() { return this; }
+      setOAuthToken(value) { window.pickerOptions.token = value; return this; }
+      setAppId(value) { window.pickerOptions.appId = value; return this; }
+      setDeveloperKey(value) { window.pickerOptions.key = value; return this; }
+      setOrigin(value) { window.pickerOptions.origin = value; return this; }
+      setCallback(value) { window.pickerCallback = value; return this; }
+      build() { return { setVisible(value) { window.pickerVisible = value; } }; }
+    },
+  };
+}
+
+const publicKey = 'AIza' + 'x'.repeat(35);
+
+async function configurePicker(page) {
+  await page.locator('summary').filter({ hasText: 'Google Picker' }).click();
+  await page.locator('#pickerProject').fill('12345');
+  await page.locator('#pickerKey').fill(publicKey);
+}
+
+async function openPicker(api) {
+  await api.click('picker');
+  await api.page.waitForFunction(() => window.pickerVisible === true);
+}
+
+function pickerAction(page, action, id) {
+  return page.evaluate(({ action, id }) => window.pickerCallback({ action, docs: [{ id }] }), { action, id });
+}
+
+test('Picker is lazy, uses current-account config and authorizes same-file access and paginated B rediscovery', async t => {
+  const shared = fixture('shared-2');
+  shared.file.ownedByMe = false;
+  shared.file.shared = true;
+  shared.file.capabilities.canEdit = false;
+  delete shared.file.appProperties;
+  const filler = fixture();
+  filler.file.appProperties.list_id = categoryId;
+  filler.values.Metadata[3][1] = categoryId;
+  const api = await setup(t, [filler, shared]);
+  const { page, hooks, calls, writes, click, connect } = api;
+  let pickerLoads = 0;
+  let authorized = false;
+  await page.route('https://apis.google.com/js/api.js', route => {
+    pickerLoads++;
+    return route.fulfill({ contentType: 'text/javascript', body: '(' + pickerScript.toString() + ')()' });
+  });
+  hooks.before = async ({ endpoint, token }, route, reply) => {
+    assert.equal(token, 'Bearer B');
+    if (authorized) return;
+    if (endpoint.pathname === '/drive/v3/files') await reply({ files: [filler.file] });
+    else await reply({ error: { message: 'private upstream body' } }, 404);
+    return true;
+  };
+  await connect('B', 'reconnect');
+  await configurePicker(page);
+  await page.locator('#probeId').fill('shared-2');
+  await click('probe');
+  await expect(page.locator('#probeStatus')).toHaveText('Drive files.list · לא נמצא | Drive files.get · HTTP 404');
+  assert.equal(pickerLoads, 0);
+  await openPicker(api);
+  assert.deepEqual(await page.evaluate(() => window.pickerOptions), {
+    view: 'sheets', mime, mode: 'list', token: 'B', appId: '12345', origin: new URL(url).origin, key: publicKey,
+  });
+  authorized = true;
+  await pickerAction(page, 'picked', 'shared-2');
+  await expect(page.locator('#pickerStatus')).toContainText('Drive files.list · נמצא | Drive files.get · נמצא | Sheets · נקרא | אימות גיליון · עבר');
+  await expect(page.locator('#sheetId')).toHaveText('shared-2');
+  await expect(page.locator('#sheetListId')).toHaveText(listId);
+  await expect(page.locator('#sheetAppend')).toBeDisabled();
+  await page.locator('#sheetAppend').evaluate(node => node.dispatchEvent(new Event('click')));
+  await api.status('אין יכולת עריכה');
+  assert.equal(writes().length, 0);
+  await page.reload();
+  await connect('B');
+  await api.load('shared-2');
+  await expect(page.locator('#sheetListId')).toHaveText(listId);
+  assert(calls.some(call => call.endpoint.searchParams.get('pageToken') === '1'));
+  assert.equal(pickerLoads, 1);
+  assert.equal(writes().length, 0);
+});
+
+test('Picker loading failure can be retried, cancellation and late account callbacks do not access files', async t => {
+  const api = await setup(t, [fixture()]);
+  const { page, calls, click, connect } = api;
+  let failed = false;
+  await page.route('https://apis.google.com/js/api.js', route => {
+    if (!failed) {
+      failed = true;
+      return route.abort();
+    }
+    return route.fulfill({ contentType: 'text/javascript', body: '(' + pickerScript.toString() + ')()' });
+  });
+  await configurePicker(page);
+  await click('picker');
+  await expect(page.locator('#pickerStatus')).toContainText('טעינת Google Picker נכשלה');
+  await openPicker(api);
+  await pickerAction(page, 'cancel');
+  await expect(page.locator('#pickerStatus')).toHaveText('הבחירה בוטלה.');
+  await openPicker(api);
+  await connect('B', 'reconnect');
+  await pickerAction(page, 'picked', 'file-1');
+  await expect(page.locator('#pickerStatus')).toBeEmpty();
+  await expect(page.locator('#sheetId')).toHaveText('—');
+  assert.equal(await page.evaluate(() => window.pickerVisible), false);
+  assert.equal(calls.length, 0);
+});
+
+test('Picker expiry ignores late selections and a fresh session rejects unrelated or initializing files', async t => {
+  const unrelated = fixture();
+  unrelated.file.mimeType = 'application/pdf';
+  const initializing = fixture('file-2');
+  initializing.file.appProperties.initialization_status = 'initializing';
+  const api = await setup(t, [unrelated, initializing], { clock: true });
+  const { page, calls, writes, connect } = api;
+  await page.route('https://apis.google.com/js/api.js', route =>
+    route.fulfill({ contentType: 'text/javascript', body: '(' + pickerScript.toString() + ')()' }));
+  await configurePicker(page);
+  await openPicker(api);
+  await page.clock.fastForward(3600001);
+  await pickerAction(page, 'picked', 'file-1');
+  await expect(page.locator('#status')).toContainText('תוקף');
+  assert.equal(calls.length, 0);
+  await connect('A', 'reconnect');
+  for (const [id, expected] of [['file-1', 'לא זוהה'], ['file-2', 'initializing']]) {
+    await openPicker(api);
+    await pickerAction(page, 'picked', id);
+    await expect(page.locator('#pickerStatus')).toContainText(expected);
+    await expect(page.locator('#sheetId')).toHaveText('—');
+  }
+  assert.equal(writes().length, 0);
+});
+
+test('Shared writer can change a synthetic item but cannot share, and a downgrade blocks a loaded write', async t => {
+  const entry = fixture();
+  entry.file.ownedByMe = false;
+  entry.file.shared = true;
+  entry.values.Items.push(item());
+  const api = await setup(t, [entry]);
+  const { page, load, click, status, writes, hooks } = api;
+  await load();
+  await expect(page.locator('#inspectPermissions')).toBeDisabled();
+  await page.locator('#sheetItem').selectOption(itemId);
+  await page.locator('#sheetQuantity').fill('2.5');
+  await click('sheetQuantitySave');
+  await status('הכתיבה אומתה');
+  assert.equal(entry.values.Items[1][2], 2.5);
+  entry.file.capabilities.canEdit = false;
+  await click('sheetAppend');
+  await status('אין יכולת עריכה');
+  assert.equal(writes().length, 1);
+  await expect(page.locator('#sheetRows')).toBeEmpty();
+  entry.file.capabilities.canEdit = true;
+  await load();
+  hooks.identity = () => ({ sub: 'different', email: 'A@example.test' });
+  await click('sheetAppend');
+  await status('זהות החשבון אינה תואמת');
+  assert.equal(writes().length, 1);
+  hooks.identity = undefined;
+  await load();
+  hooks.before = async ({ endpoint, method }, route, reply) => {
+    if (method === 'GET' && endpoint.pathname === '/drive/v3/files/file-1') {
+      await reply({}, 404);
+      return true;
+    }
+  };
+  await click('sheetAppend');
+  await status('HTTP 404');
+  assert.equal(writes().length, 1);
+});
+
+test('Owner lists ACLs and creates, changes and deletes only explicit user permissions', async t => {
+  const entry = fixture();
+  const api = await setup(t, [entry]);
+  const { page, load, click, hooks, writes } = api;
+  const permissions = [
+    { id: 'owner-1', type: 'user', role: 'owner', emailAddress: 'A@example.test' },
+    { id: 'group-1', type: 'group', role: 'reader' },
+  ];
+  hooks.before = async ({ endpoint, method, body }, route, reply) => {
+    if (!endpoint.pathname.includes('/permissions')) return;
+    if (method === 'GET') {
+      const offset = Number(endpoint.searchParams.get('pageToken') ?? 0);
+      await reply({ permissions: permissions.slice(offset, offset + 1),
+        nextPageToken: offset + 1 < permissions.length ? String(offset + 1) : undefined });
+    } else if (method === 'POST') {
+      permissions.push({ id: 'new-1', ...body });
+      await reply(permissions.at(-1));
+    } else if (method === 'PATCH') {
+      permissions.at(-1).role = body.role;
+      await reply(permissions.at(-1));
+    } else {
+      permissions.pop();
+      await route.fulfill({ status: 204 });
+    }
+    return true;
+  };
+  await load();
+  await page.locator('summary').filter({ hasText: 'ניהול שיתוף' }).click();
+  const sharingStatus = value => expect(page.locator('#sharingStatus')).toContainText(value);
+  async function inspect() {
+    await click('inspectPermissions');
+    await sharingStatus('נקראו');
+  }
+  await inspect();
+  await expect(page.locator('#permissionSummary')).toContainText('קבוצה');
+  await expect(page.locator('#permissionSelect option')).toHaveCount(1);
+  await page.locator('#recipient').fill('B@example.test, C@example.test');
+  await page.locator('#sharingForm').evaluate(form => form.dispatchEvent(new Event('submit', { cancelable: true })));
+  await sharingStatus('כתובת יחידה');
+  assert.equal(writes().length, 0);
+
+  await inspect();
+  await page.locator('#recipient').fill('B@example.test');
+  await click('share');
+  await sharingStatus('אישרה את השינוי');
+  assert.deepEqual(writes()[0].body, { type: 'user', role: 'reader', emailAddress: 'B@example.test' });
+  await expect(page.locator('#recipient')).toHaveValue('');
+  await expect(page.locator('#log')).not.toContainText('B@example.test');
+  assert.equal(await page.evaluate(() => JSON.stringify(localStorage).includes('B@example.test')), false);
+  await inspect();
+  await expect(page.locator('#permissionSelect option').last()).toContainText('B@example.test');
+  await page.locator('#permissionSelect').selectOption('new-1');
+  await page.locator('#permissionRole').selectOption('writer');
+  await click('changePermission');
+  await sharingStatus('אישרה את השינוי');
+  assert.deepEqual(writes()[1].body, { role: 'writer' });
+
+  await inspect();
+  await page.locator('#permissionSelect').selectOption('new-1');
+  entry.file.capabilities.canShare = false;
+  await click('removePermission');
+  await sharingStatus('אינו זמין');
+  assert.equal(writes().length, 2);
+  entry.file.capabilities.canShare = true;
+  await inspect();
+  await page.locator('#permissionSelect').selectOption('new-1');
+  await click('removePermission');
+  await sharingStatus('אישרה את השינוי');
+  assert.equal(writes()[2].method, 'DELETE');
+  assert(writes()[2].endpoint.pathname.endsWith('/permissions/new-1'));
+});
+
+test('Switching from A to B while write preflight is outstanding sends no write', async t => {
+  const api = await setup(t, [fixture()]);
+  const { page, hooks, click, load, writes, connect } = api;
+  await load();
+  let release;
+  let received;
+  const started = new Promise(resolve => { received = resolve; });
+  const delayed = new Promise(resolve => { release = resolve; });
+  hooks.before = async ({ endpoint }, route) => {
+    if (!endpoint.pathname.endsWith('/values:batchGet')) return;
+    received();
+    await delayed;
+    await route.abort().catch(() => {});
+    return true;
+  };
+  await click('sheetAppend');
+  await started;
+  await connect('B', 'reconnect');
+  release();
+  await expect(page.locator('#sheetRows')).toBeEmpty();
+  await expect(page.locator('#sheetAppend')).toBeDisabled();
+  assert.equal(writes().length, 0);
+});
+
+test('Metadata-only shared duplicate list and duplicate item identities are blocked', async t => {
+  const shared = fixture('shared-2');
+  shared.file.ownedByMe = false;
+  shared.file.shared = true;
+  delete shared.file.appProperties;
+  shared.values.Items.push(item(), item('עותק', itemId.toUpperCase()));
+  const api = await setup(t, [fixture()]);
+  const { page, click, status, load, files, writes, discover } = api;
+  await load();
+  files.set('shared-2', shared);
+  await click('sheetAppend');
+  await status('אותו list_id');
+  await discover(2);
+  await page.locator('#sheetSelect').selectOption('shared-2');
+  await status('אותו item_id');
+  await expect(page.locator('#sheetLoad')).toBeDisabled();
+  assert.equal(writes().length, 0);
 });

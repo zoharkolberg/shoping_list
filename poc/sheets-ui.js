@@ -1,11 +1,13 @@
 import { googleRequest, shoppingSheets } from "./sheets.js";
+import { shoppingSharing } from "./sharing.js";
+import { pickSpreadsheet, pickerConfiguration } from "./picker.js";
 
 const messages = {
   api: "הבקשה ל־Google נדחתה.",
   network: "קריאת Google נכשלה או חרגה מזמן ההמתנה.",
   response: "התקבלה תשובה לא תקינה מ־Google.",
   schema: "מבנה הגיליון או הערכים אינם תואמים לסכמה.",
-  unrelated: "הקובץ לא זוהה כקובץ דמה בבעלות החשבון.",
+  unrelated: "הקובץ לא זוהה כקובץ דמה מתאים לחשבון.",
   initializing: "הקובץ עדיין במצב initializing. אם האתחול חלקי, עצרו כתיבה ותעדו את המזהים לפי מדריך הבדיקה.",
   duplicateList: "נמצאו קבצים עם אותו list_id. הכתיבה חסומה.",
   duplicateItem: "נמצאו שורות עם אותו item_id. הכתיבה חסומה.",
@@ -13,6 +15,15 @@ const messages = {
   input: "בחרו פריט והזינו כמות חיובית בעת עריכת כמות.",
   itemMissing: "הפריט חסר או מסומן כמחוק.",
   discovery: "לא ניתן לאמת את גילוי הקובץ ב־Drive. נסו לגלות שוב.",
+  wrongAccount: "זהות החשבון אינה תואמת לחיבור הנוכחי. התחברו מחדש.",
+  fileId: "הזינו מזהה גיליון בלבד.",
+  pickerConfig: "הזינו מספר פרויקט ומפתח API מוגבל ל־Picker.",
+  pickerLoad: "טעינת Google Picker נכשלה. אפשר לנסות לפתוח אותו שוב.",
+  pickerFailure: "Google Picker לא החזיר בחירת גיליון תקינה.",
+  sharingDenied: "ההרשאה השתנתה או שניהולה אינו זמין לחשבון הבעלים.",
+  sharingInput: "הזינו כתובת יחידה של חשבון בדיקה אחר ובחרו צופה או עורך.",
+  sharingExists: "כבר קיימת הרשאת משתמש. בדקו את ההרשאות לפני שינוי התפקיד.",
+  sharingUncertain: "תוצאת שינוי ההרשאה אינה ידועה. בדקו הרשאות לפני פעולה נוספת.",
   pending: "קיימת פעולה שתוצאתה טרם אומתה.",
   uncertain: "תוצאת הכתיבה טרם אומתה. אפשר לבדוק שוב לפי המזהה.",
 };
@@ -33,6 +44,30 @@ export function attachSheetsUI(ui, currentSession, expire) {
     node.value = value;
     node.textContent = label;
     select.append(node);
+  }
+
+  function clearPermissions(current) {
+    if (current) current.permissions = undefined;
+    ui.recipient.value = "";
+    ui.permissionRole.value = "reader";
+    ui.permissionSummary.replaceChildren();
+    ui.permissionSelect.replaceChildren();
+    option(ui.permissionSelect, "", "בחירת הרשאה");
+    ui.sharingStatus.textContent = "";
+  }
+
+  function showPermissions(current, entries) {
+    current.permissions = entries;
+    for (const [index, entry] of entries.entries()) {
+      const role = { owner: "בעלים", reader: "צופה", writer: "עורך" }[entry.role] ?? "תפקיד אחר";
+      const type = { user: "משתמש", group: "קבוצה", domain: "דומיין", anyone: "גישה כללית" }[entry.type] ?? "סוג אחר";
+      const label = [role, type, entry.email || "הרשאה " + (index + 1)].join(" · ");
+      const line = document.createElement("li");
+      line.textContent = label;
+      line.dir = "auto";
+      ui.permissionSummary.append(line);
+      if (entry.controllable) option(ui.permissionSelect, entry.id, label);
+    }
   }
 
   function showItems(current) {
@@ -61,6 +96,19 @@ export function attachSheetsUI(ui, currentSession, expire) {
     ui.sheetSelect.disabled = !enabled || !state.files.length;
     ui.sheetLoad.disabled = !enabled || !file || Boolean(chosen.issue);
     ui.sheetAppend.disabled = !writable;
+    ui.picker.disabled = !enabled;
+    ui.probe.disabled = !enabled;
+    ui.probeId.disabled = !enabled;
+    const manageable = enabled && loaded && state.snapshot.file.ownedByMe === true &&
+      state.snapshot.file.capabilities.canShare === true;
+    ui.inspectPermissions.disabled = !manageable;
+    const inspected = manageable && Boolean(state.permissions);
+    ui.share.disabled = !inspected;
+    ui.recipient.disabled = !inspected;
+    ui.permissionRole.disabled = !inspected;
+    ui.permissionSelect.disabled = !inspected || ui.permissionSelect.options.length < 2;
+    ui.changePermission.disabled = ui.permissionSelect.disabled || !ui.permissionSelect.value;
+    ui.removePermission.disabled = ui.changePermission.disabled;
     ui.sheetItem.disabled = !enabled || !loaded;
     for (const button of [ui.sheetQuantitySave, ui.sheetComplete, ui.sheetDelete]) {
       button.disabled = !writable || !ui.sheetItem.value;
@@ -68,7 +116,7 @@ export function attachSheetsUI(ui, currentSession, expire) {
     ui.sheetQuantity.disabled = ui.sheetQuantitySave.disabled;
     ui.sheetReconcile.disabled = !enabled || !pending;
     ui.sheetPending.textContent = pending
-      ? "מזהה לבדיקה חוזרת " + (pending.listId ?? pending.itemId) +
+      ? "מזהה לבדיקה חוזרת " + (pending.itemId ?? pending.listId) +
         (pending.id ? " · מזהה גיליון " + pending.id : "") + " · פעולות כתיבה מושהות."
       : "";
     ui.sheetListId.textContent = file?.appProperties?.list_id ?? "—";
@@ -80,6 +128,7 @@ export function attachSheetsUI(ui, currentSession, expire) {
   }
 
   function selectFiles(current, files, id) {
+    clearPermissions(current);
     current.files = files;
     current.snapshot = undefined;
     ui.sheetSelect.replaceChildren();
@@ -91,26 +140,28 @@ export function attachSheetsUI(ui, currentSession, expire) {
     showItems(current);
   }
 
-  async function run(action) {
+  async function run(action, output = ui.sheetStatus) {
     const current = state;
     if (!current || current.busy) return;
     current.busy = true;
-    ui.sheetStatus.textContent = "פעולה מול Google מתבצעת…";
+    output.textContent = "פעולה מול Google מתבצעת…";
     render();
     try {
       const result = await action(current);
       if (state !== current) return;
-      ui.sheetStatus.textContent = result;
+      output.textContent = result;
     } catch (error) {
       if (state !== current) return;
       if (error.code === "expired") {
         expire(current.session);
         return;
       }
-      current.snapshot = undefined;
-      showItems(current);
-      ui.sheetStatus.textContent = (messages[error.code] ?? "פעולת הגיליון נכשלה.") +
-        (Number.isInteger(error.status) ? " HTTP " + error.status : "");
+      if (output === ui.sheetStatus) {
+        current.snapshot = undefined;
+        clearPermissions(current);
+        showItems(current);
+      }
+      output.textContent = errorMessage(error);
     } finally {
       if (state === current) {
         current.busy = false;
@@ -119,8 +170,15 @@ export function attachSheetsUI(ui, currentSession, expire) {
     }
   }
 
+  function errorMessage(error) {
+    return (messages[error.code] ?? "פעולת הגיליון נכשלה.") +
+      (Number.isInteger(error.status) ? " HTTP " + error.status : "");
+  }
+
   async function load(current, id) {
-    const snapshot = await current.service.load(id);
+    clearPermissions(current);
+    const expected = current.files.find(entry => entry.file.id === id)?.file.appProperties?.list_id;
+    const snapshot = await current.service.load(id, expected);
     if (state !== current) return;
     current.snapshot = snapshot;
     showItems(current);
@@ -149,6 +207,7 @@ export function attachSheetsUI(ui, currentSession, expire) {
   ui.sheetSelect.addEventListener("change", () => {
     if (!state || state.busy) return;
     state.snapshot = undefined;
+    clearPermissions(state);
     showItems(state);
     const issue = state.files.find(entry => entry.file.id === ui.sheetSelect.value)?.issue;
     ui.sheetStatus.textContent = issue ? messages[issue] : "אפשר לטעון את הגיליון שנבחר.";
@@ -167,7 +226,10 @@ export function attachSheetsUI(ui, currentSession, expire) {
   function write(action) {
     return run(async current => {
       const id = ui.sheetSelect.value;
-      const { snapshot } = await action(current.service, id);
+      const listId = current.snapshot?.metadata.get("list_id");
+      if (!listId) return "יש לטעון גיליון לפני הכתיבה.";
+      clearPermissions(current);
+      const { snapshot } = await action(current.service, id, listId);
       if (state !== current) return;
       current.snapshot = snapshot;
       showItems(current);
@@ -175,14 +237,70 @@ export function attachSheetsUI(ui, currentSession, expire) {
     });
   }
 
-  ui.sheetAppend.addEventListener("click", () => void write((service, id) => service.append(id)));
+  ui.sheetAppend.addEventListener("click", () => void write((service, id, listId) => service.append(id, listId)));
   for (const [button, field] of [
     [ui.sheetQuantitySave, "quantity"], [ui.sheetComplete, "completed"], [ui.sheetDelete, "deleted"],
   ]) {
-    button.addEventListener("click", () => void write((service, id) => service.update(
-      id, ui.sheetItem.value, field, field === "quantity" ? ui.sheetQuantity.valueAsNumber : true,
+    button.addEventListener("click", () => void write((service, id, listId) => service.update(
+      id, ui.sheetItem.value, field, field === "quantity" ? ui.sheetQuantity.valueAsNumber : true, listId,
     )));
   }
+
+  ui.probe.addEventListener("click", () => void run(current =>
+    current.service.diagnose(ui.probeId.value.trim()), ui.probeStatus));
+
+  ui.picker.addEventListener("click", () => void run(async current => {
+    const config = pickerConfiguration(ui.pickerProject.value.trim(), ui.pickerKey.value.trim());
+    const id = await pickSpreadsheet(current.session, config);
+    if (state !== current) return;
+    if (!id) return "הבחירה בוטלה.";
+    const { diagnostics, snapshot, error } = await current.service.selected(id);
+    if (state !== current) return;
+    if (error) {
+      if (current.snapshot?.file.id === id) {
+        selectFiles(current, current.files.filter(entry => entry.file.id !== id));
+      }
+      return diagnostics + " | אימות גיליון · " + errorMessage(error);
+    }
+    const files = current.files.filter(entry => entry.file.id !== id);
+    selectFiles(current, [...files, { file: snapshot.file, issue: "" }], id);
+    current.snapshot = snapshot;
+    showItems(current);
+    return diagnostics + " | אימות גיליון · עבר";
+  }, ui.pickerStatus));
+
+  async function inspect(current) {
+    const id = current.snapshot?.file.id;
+    const listId = current.snapshot?.metadata.get("list_id");
+    clearPermissions(current);
+    const entries = await current.sharing.inspect(id, listId);
+    if (state === current) showPermissions(current, entries);
+    return "הרשאות השיתוף נקראו.";
+  }
+
+  function changePermission(action) {
+    return run(async current => {
+      const id = current.snapshot?.file.id;
+      const listId = current.snapshot?.metadata.get("list_id");
+      const permissionId = ui.permissionSelect.value;
+      const currentRole = current.permissions?.find(entry => entry.id === permissionId)?.role;
+      const role = ui.permissionRole.value;
+      const email = ui.recipient.value.trim();
+      clearPermissions(current);
+      await current.sharing.change(id, listId, action, { email, role, permissionId, currentRole });
+      if (state !== current) return;
+      return "Google אישרה את השינוי. בדקו שוב את ההרשאות.";
+    }, ui.sharingStatus);
+  }
+
+  ui.inspectPermissions.addEventListener("click", () => void run(inspect, ui.sharingStatus));
+  ui.permissionSelect.addEventListener("change", render);
+  ui.sharingForm.addEventListener("submit", event => {
+    event.preventDefault();
+    void changePermission("add");
+  });
+  ui.changePermission.addEventListener("click", () => void changePermission("role"));
+  ui.removePermission.addEventListener("click", () => void changePermission("remove"));
 
   return (session, clientId) => {
     if (state?.session !== session) {
@@ -190,8 +308,13 @@ export function attachSheetsUI(ui, currentSession, expire) {
       if (session) {
         const pending = pendingFor(session, clientId);
         const request = googleRequest(session, () => currentSession() === session);
-        state = { session, pending, service: shoppingSheets(request, pending), files: [] };
+        const service = shoppingSheets(request, pending, session.account);
+        state = { session, pending, service, sharing: shoppingSharing(request, service, session.account), files: [] };
       }
+      clearPermissions(state);
+      ui.probeId.value = "";
+      ui.probeStatus.textContent = "";
+      ui.pickerStatus.textContent = "";
       ui.sheetSelect.replaceChildren();
       option(ui.sheetSelect, "", "בחירת גיליון");
       ui.sheetQuantity.value = "";

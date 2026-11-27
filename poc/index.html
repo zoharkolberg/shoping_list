@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://accounts.google.com/gsi/client; style-src 'self' https://accounts.google.com/gsi/style; connect-src https://accounts.google.com/gsi/ https://openidconnect.googleapis.com https://www.googleapis.com https://sheets.googleapis.com; frame-src https://accounts.google.com/gsi/; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://accounts.google.com/gsi/client https://apis.google.com; style-src 'self' https://accounts.google.com/gsi/style; connect-src https://accounts.google.com/gsi/ https://openidconnect.googleapis.com https://www.googleapis.com https://sheets.googleapis.com; frame-src https://accounts.google.com/gsi/ https://docs.google.com https://drive.google.com; base-uri 'none'; form-action 'none'">
   <title>בדיקת חיבור ל־Google</title>
   <link rel="stylesheet" href="./style.css">
   <script type="module" src="./app.js"></script>
@@ -64,6 +64,43 @@
         <dt>מזהה גיליון</dt><dd id="sheetId" dir="auto">—</dd>
         <dt>מצב אתחול</dt><dd id="sheetInit" dir="auto">—</dd>
       </dl>
+      <details>
+        <summary>Google Picker ואבחון גישה</summary>
+        <label for="pickerProject">מספר פרויקט Google Cloud</label>
+        <input id="pickerProject" dir="ltr" inputmode="numeric" autocomplete="off">
+        <label for="pickerKey">מפתח API ציבורי ומוגבל ל־Picker</label>
+        <input id="pickerKey" dir="ltr" autocomplete="off" spellcheck="false">
+        <label for="probeId">מזהה גיליון לבדיקה לפני בחירה</label>
+        <input id="probeId" dir="ltr" autocomplete="off" spellcheck="false">
+        <div class="actions">
+          <button id="probe" disabled>בדיקת גישה ב־Drive</button>
+          <button id="picker" disabled>בחירת גיליון דרך Google Picker</button>
+        </div>
+        <p id="probeStatus" role="status" dir="auto"></p>
+        <p id="pickerStatus" role="status" dir="auto"></p>
+      </details>
+      <details>
+        <summary>ניהול שיתוף לבעלי הגיליון</summary>
+        <p id="sharingStatus" role="status"></p>
+        <button id="inspectPermissions" disabled>בדיקת הרשאות שיתוף</button>
+        <ul id="permissionSummary"></ul>
+        <form id="sharingForm" autocomplete="off">
+          <label for="recipient">כתובת אימייל של חשבון בדיקה</label>
+          <input id="recipient" type="email" dir="ltr" autocomplete="off" spellcheck="false" disabled>
+          <label for="permissionRole">תפקיד</label>
+          <select id="permissionRole" disabled>
+            <option value="reader">צופה</option>
+            <option value="writer">עורך</option>
+          </select>
+          <button id="share" disabled>מתן גישה לכתובת</button>
+        </form>
+        <label for="permissionSelect">הרשאת משתמש קיימת</label>
+        <select id="permissionSelect" disabled></select>
+        <div class="actions">
+          <button id="changePermission" disabled>שינוי לתפקיד שנבחר</button>
+          <button id="removePermission" disabled>הסרת גישה</button>
+        </div>
+      </details>
       <button id="sheetAppend" disabled>הוספת פריט דמה</button>
       <ul id="sheetRows" aria-label="פריטים בגיליון"></ul>
       <label for="sheetItem">פריט לעדכון</label>
