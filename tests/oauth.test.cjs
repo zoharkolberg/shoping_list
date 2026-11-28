@@ -295,6 +295,8 @@ test('CSP permits documented GIS paths and confines application resource types',
   assert.deepEqual(directives['default-src'], ["'none'"]);
   assert.deepEqual(directives['script-src'], ["'self'", 'https://accounts.google.com/gsi/client', 'https://apis.google.com']);
   assert.deepEqual(directives['style-src'], ["'self'", 'https://accounts.google.com/gsi/style']);
+  assert.deepEqual(directives['style-src-elem'], ["'self'", 'https://accounts.google.com/gsi/style', "'unsafe-inline'"]);
+  assert.deepEqual(directives['style-src-attr'], ["'none'"]);
   assert.deepEqual(directives['frame-src'], ['https://accounts.google.com/gsi/', 'https://docs.google.com', 'https://drive.google.com']);
   assert.deepEqual(directives['connect-src'], [
     'https://accounts.google.com/gsi/', 'https://openidconnect.googleapis.com', 'https://www.googleapis.com',
@@ -302,4 +304,39 @@ test('CSP permits documented GIS paths and confines application resource types',
   ]);
   assert.deepEqual(directives['base-uri'], ["'none'"]);
   assert.deepEqual(directives['form-action'], ["'none'"]);
+});
+
+test('CSP applies injected layout styles and blocks style attributes and inline scripts', async t => {
+  const page = await browser.newPage();
+  t.after(() => page.close());
+  await page.route('https://accounts.google.com/gsi/client', mockLibrary);
+  await page.goto(base + 'poc/');
+  const layout = await page.evaluate(() => {
+    window.cspViolations = [];
+    document.addEventListener('securitypolicyviolation', ({ effectiveDirective }) => {
+      window.cspViolations.push(effectiveDirective);
+    });
+    const panel = document.createElement('div');
+    panel.id = 'mock-picker-panel';
+    panel.setAttribute('style', 'display: none');
+    const frame = document.createElement('iframe');
+    panel.append(frame);
+    const style = document.createElement('style');
+    style.textContent = '#mock-picker-panel iframe { display: block; height: 40vh; border: 0; }';
+    const script = document.createElement('script');
+    script.textContent = 'window.inlineScriptRan = true';
+    document.head.append(style, script);
+    document.body.append(panel);
+    return {
+      visible: getComputedStyle(panel).display !== 'none',
+      height: frame.getBoundingClientRect().height,
+      expectedHeight: innerHeight * 0.4,
+      inlineScriptRan: window.inlineScriptRan === true,
+    };
+  });
+  assert.equal(layout.visible, true);
+  assert(Math.abs(layout.height - layout.expectedHeight) < 1);
+  assert.equal(layout.inlineScriptRan, false);
+  await page.waitForFunction(() => window.cspViolations.length >= 2);
+  assert.deepEqual(await page.evaluate(() => window.cspViolations.sort()), ['script-src-elem', 'style-src-attr']);
 });

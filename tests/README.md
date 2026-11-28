@@ -43,4 +43,4 @@ NODE_PATH="$TEST_TOOLS/node_modules" PLAYWRIGHT_BROWSERS_PATH="$TEST_TOOLS/brows
 
 תוצאות הסוויטה הן תוצאות סימולציה. תרחישי הזמן משתמשים בשעון של Playwright. עבור שימוש חי עם חשבונות הבדיקה ועם Pages, ראו את [הוראות ההרצה הידנית](../poc/README.md). אימות TLS בדפדפן נשאר פעיל.
 
-הבדיקה הסטטית משווה את מדיניות ה־CSP להנחיות GIS עבור `script-src`, `style-src`, `frame-src` ו־`connect-src`. ל־`connect-src` נוספים מקורות ה־API הדרושים ל־UserInfo, Drive ו־Sheets. `default-src 'none'` נשאר ברירת המחדל. [הנחיות Google ל־CSP](https://developers.google.com/identity/gsi/web/guides/get-google-api-clientid#content_security_policy)
+הבדיקה הסטטית משווה את מדיניות ה־CSP להנחיות GIS עבור `script-src`, `style-src`, `frame-src` ו־`connect-src`. בדיקת Chromium מאמתת שתגית `<style>` שנוספה בזמן ריצה קובעת את גובהו של iframe מדומה, ושמאפיין `style` וסקריפט inline נחסמים. בדיקת Picker מדמה בחירת גיליון משותף וגילוי מחדש אחרי חיבור חוזר. ל־`connect-src` נוספים מקורות ה־API הדרושים ל־UserInfo, Drive ו־Sheets. `default-src 'none'` נשאר ברירת המחדל. [הנחיות Google ל־CSP](https://developers.google.com/identity/gsi/web/guides/get-google-api-clientid#content_security_policy)
